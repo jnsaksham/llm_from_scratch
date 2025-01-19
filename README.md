@@ -6,12 +6,12 @@ Followed GPT's baseline architecture. The system is divided into 3 parts-
 3. Finetuning
 
 ### Preprocessing
-Text pre-processing: Cleaning the text with regex \
-Tokenization: Implemented word tokenization, character tokenization and Byte-pair encoding (Used in GPT). BPE is implemented using tikoken. \
-Vector Embedding:
+1. Text pre-processing: Cleaning the text with regex
+2. Tokenization: Implemented word tokenization, character tokenization and Byte-pair encoding (Used in GPT). BPE is implemented using tikoken
+3. Vector Embedding:
 
 ### Pretraining
-Simplified Attention \
-Self Attention \
-Cross Attention \
-Multihead attention
+1. Simplified Attention
+2. Self Attention
+3. Cross Attention
+4. Multihead attention
