@@ -156,7 +156,7 @@ class CausalAttention(nn.Module):
         First builds an upper triangle infinity mask on attention scores to cancel the impact of future tokens.
         It then applies softmax to compute attention weights.
         """
-        attention_scores.masked_fill(
+        attention_scores.masked_fill_(
             self.mask.bool()[:num_tokens, :num_tokens], -torch.inf)
         masked_weights = self.attention_weights(attention_scores, keys)
         return masked_weights
@@ -172,3 +172,91 @@ class MultiHeadAttentionWrapper(nn.Module):
 
     def forward(self, x):
         return torch.cat([head(x) for head in self.heads], dim=-1)
+    
+class MultiHeadAttention(nn.Module):
+    def __init__(self, d_in, d_out, context_length, dropout, num_heads, qkv_bias=False):
+        """
+        Actual (parallel) implementation of multiheads.
+
+        In GPT like models, usually d_in = d_out
+        d_out = desired output dimension. Note that this is not the dimension of a single head. Single head's dimension is
+        calcuated by d_out // num_heads
+        """
+
+        super().__init__()
+        assert (d_out % num_heads == 0), \
+               "d_out must be divisible by num_heads"
+
+        self.d_out = d_out
+        self.num_heads = num_heads
+        self.head_dim = d_out//num_heads    # reduce the proj dim to match desired output dim
+
+        self.W_key = nn.Linear(d_in, d_out, bias=qkv_bias)
+        self.W_query = nn.Linear(d_in, d_out, bias=qkv_bias)
+        self.W_value = nn.Linear(d_in, d_out, bias=qkv_bias)
+        self.out_proj = nn.Linear(d_out, d_out) # Linear layer to combine head outputs
+        self.dropout = nn.Dropout(dropout)
+        self.register_buffer('mask', torch.triu(torch.ones(context_length, context_length), diagonal=1))
+
+    def forward(self, x):
+        b, num_tokens, d_in = x.shape
+
+        keys = self.W_key(x)
+        queries = self.W_query(x)
+        values = self.W_value(x)
+
+        # Since d_out is the final output dimension, we unroll d_out into num_heads * head_dim.
+        keys = keys.view(b, num_tokens, self.num_heads, self.head_dim)
+        queries = queries.view(b, num_tokens, self.num_heads, self.head_dim)
+        values = values.view(b, num_tokens, self.num_heads, self.head_dim)
+
+        # currently it's grouped by num_tokens. We want to group it by num_heads
+        # (b, num_tokens, self.num_heads, self.head_dim) -> (b, self.num_heads, num_tokens, self.head_dim)
+        keys = keys.transpose(1, 2)
+        queries = keys.transpose(1, 2)
+        values = keys.transpose(1, 2)
+
+        # compute causal self attention 
+        attention_scores = self.attention_scores(queries, keys)
+
+        masked_scores = self.apply_mask(attention_scores)
+
+        # compute attention weights
+        attention_weights = self.attention_weights(masked_scores, keys)
+        attention_weights = self.dropout(attention_weights)
+
+        # dimension till now are (b, num_heads, num_tokens, head_dim)
+        # needs to be rolled back up to (b, num_tokens, d_out). This is done in 2 steps
+
+        # step 1: swap num_heads and num_tokens
+        context_vector = (attention_weights @ values).transpose(1,2)
+
+        # step 2: roll up last 2 into 1
+        context_vector = context_vector.contiguous().view(b, num_tokens, self.d_out)
+
+        context_vector = self.out_proj(context_vector)  # optional
+
+        return context_vector
+    
+    def apply_mask(self, attention_scores, num_tokens):
+        mask_bool = self.mask.bool()[:num_tokens, :num_tokens]
+
+        attention_scores.masked_fill_(mask_bool, -torch.inf)
+        return attention_scores
+
+    def attention_scores(self, queries, keys):
+        attention_scores = queries @ keys.transpose(2, 3)   # last 2 dimensions contain the actual 2-D keys. First 2 are batch and num_heads
+        return attention_scores
+    
+    def attention_weights(self, attention_scores, keys):
+        d_k = keys.shape[-1]
+
+        # scale softmax tor reduce the values. It avoids peaky behaviour of softmax if values are large
+        attention_scores = attention_scores/(d_k ** 0.5)
+
+        # softmax
+        attention_weights = torch.softmax(attention_scores, dim=-1)
+
+        return attention_weights
+        
+
