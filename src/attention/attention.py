@@ -36,6 +36,8 @@ class SelfAttention(nn.Module):
     while still focusing on the underlying attention mechanism.
 
     Self attention solves that using Key, Query and Value matrices (Wk, Wq, Wv).
+
+    Note that the implementation is on one input and not a batch of inputs. Causal attention module implements batched input
     """
     def __init__(self, d_in, d_out):
         super().__init__()
@@ -49,9 +51,9 @@ class SelfAttention(nn.Module):
         self.W_value = nn.Linear(d_in, d_out, bias=qkv_bias)
 
     def forward(self, x):
-        keys = x @ self.W_key
-        queries = x @ self.W_query
-        values = x @ self.W_value
+        keys = self.W_key(x)
+        queries = self.W_query(x)
+        values = self.W_value(x)
 
         attention_scores = self.attention_scores(queries, keys)
         attention_weights = self.attention_weights(attention_scores, keys)
@@ -78,23 +80,57 @@ class SelfAttention(nn.Module):
         context = attention_weights @ values
         return context
 
-class CausalAttention(SelfAttention):
-    def __init__(self, d_in, d_out):
-        super().__init__(d_in, d_out)
+class CausalAttention(nn.Module):
+    """
+    Implemented on a batch
+    """
+
+    def __init__(self, d_in, d_out, context_length, dropout, qkv_bias=False):
+        super().__init__()
+        self.d_in = d_in
+        self.d_out = d_out
+        self.W_key = nn.Linear(d_in, d_out, bias=qkv_bias)
+        self.W_query = nn.Linear(d_in, d_out, bias=qkv_bias)
+        self.W_value = nn.Linear(d_in, d_out, bias=qkv_bias)
+        self.dropout = nn.Dropout(dropout)
+        self.register_buffer('mask', torch.triu(torch.ones(context_length, context_length), diagonal=1))
     
     def forward(self, x):
-        keys = x @ self.W_key
-        queries = x @ self.W_query
-        values = x @ self.W_value
+        b, num_tokens, d_in = x.shape
+        keys = self.W_key(x)
+        queries = self.W_query(x)
+        values = self.W_value(x)
 
         attention_scores = self.attention_scores(queries, keys)
         
-        masked_weights = self.apply_causal_attention(attention_scores, keys)
+        masked_weights = self.apply_causal_attention(attention_scores, keys, num_tokens)
 
-        context_vector = masked_weights @ values
+        dropout_weights = self.apply_dropout(masked_weights)        
+
+        context_vector = dropout_weights @ values
 
         return context_vector
     
+    def attention_scores(self, queries, keys):
+        attention_scores = queries @ keys.transpose(1, 2)   # only interested in num_tokens and d_in. And not b. so no need to transpose along 0
+        return attention_scores
+    
+    def attention_weights(self, attention_scores, keys):
+        d_k = keys.shape[-1]
+
+        # scale softmax tor reduce the values. It avoids peaky behaviour of softmax if values are large
+        attention_scores = attention_scores/(d_k ** 0.5)
+
+        # softmax
+        attention_weights = torch.softmax(attention_scores, dim=-1)
+
+        return attention_weights
+    
+    def apply_dropout(self, weights):
+        torch.manual.seed(42)
+        dropout_weights = self.dropout(weights)
+        return dropout_weights
+        
     def causal_mask(self, attention_scores):
         context_length = attention_scores.shape[0]
         mask = torch.tril(torch.ones(context_length, context_length))
@@ -112,22 +148,17 @@ class CausalAttention(SelfAttention):
         row_sums = masked_weights.sum(dim=1, keepdim=True)
         masked_weights_norm = masked_weights / row_sums
         return masked_weights_norm
-    
-    def triu_inf_mask(self, attention_scores):
-        context_length = attention_scores.shape[0]
-        mask = torch.triu(torch.ones(context_length, context_length), diagonal=1)
-        return mask
-    
-    def causal_causal_attention(self, attention_scores, keys):
+        
+    def apply_causal_attention(self, attention_scores, keys, num_tokens):
         """
         Tackles the leakage issue of original causal attention method
 
         First builds an upper triangle infinity mask on attention scores to cancel the impact of future tokens.
         It then applies softmax to compute attention weights.
         """
-        mask = self.triu_inf_mask(attention_scores)
-        masked_scores = attention_scores.masked_fill(mask.bool(), -torch.inf)
-        masked_weights = self.attention_weights(masked_scores, keys)
+        attention_scores.masked_fill(
+            self.mask.bool()[:num_tokens, :num_tokens], -torch.inf)
+        masked_weights = self.attention_weights(attention_scores, keys)
         return masked_weights
 
 
