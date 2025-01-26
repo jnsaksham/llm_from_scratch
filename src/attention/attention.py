@@ -48,10 +48,10 @@ class SelfAttention(nn.Module):
         self.W_query = nn.Linear(d_in, d_out, bias=qkv_bias)
         self.W_value = nn.Linear(d_in, d_out, bias=qkv_bias)
 
-    def forward(self, inputs):
-        keys = inputs @ self.W_key
-        queries = inputs @ self.W_query
-        values = inputs @ self.W_value
+    def forward(self, x):
+        keys = x @ self.W_key
+        queries = x @ self.W_query
+        values = x @ self.W_value
 
         attention_scores = self.attention_scores(queries, keys)
         attention_weights = self.attention_weights(attention_scores, keys)
@@ -78,8 +78,58 @@ class SelfAttention(nn.Module):
         context = attention_weights @ values
         return context
 
-class CrossAttention:
-    pass
+class CausalAttention(SelfAttention):
+    def __init__(self, d_in, d_out):
+        super().__init__(d_in, d_out)
+    
+    def forward(self, x):
+        keys = x @ self.W_key
+        queries = x @ self.W_query
+        values = x @ self.W_value
+
+        attention_scores = self.attention_scores(queries, keys)
+        
+        masked_weights = self.apply_causal_attention(attention_scores, keys)
+
+        context_vector = masked_weights @ values
+
+        return context_vector
+    
+    def causal_mask(self, attention_scores):
+        context_length = attention_scores.shape[0]
+        mask = torch.tril(torch.ones(context_length, context_length))
+        return mask
+    
+    def apply_causal_attention_leakage(self, attention_scores, keys):
+        """
+        Leaky implementation in which attention_weights are computed before applying softmax. So causal mask will have leakage
+        from what it's not supposed to see.
+        This is just for demonstration and highlighting the issue.
+        """
+        mask = self.causal_mask(attention_scores)
+        attention_weights = self.attention_weights(attention_scores, keys)
+        masked_weights = attention_weights * mask
+        row_sums = masked_weights.sum(dim=1, keepdim=True)
+        masked_weights_norm = masked_weights / row_sums
+        return masked_weights_norm
+    
+    def triu_inf_mask(self, attention_scores):
+        context_length = attention_scores.shape[0]
+        mask = torch.triu(torch.ones(context_length, context_length), diagonal=1)
+        return mask
+    
+    def causal_causal_attention(self, attention_scores, keys):
+        """
+        Tackles the leakage issue of original causal attention method
+
+        First builds an upper triangle infinity mask on attention scores to cancel the impact of future tokens.
+        It then applies softmax to compute attention weights.
+        """
+        mask = self.triu_inf_mask(attention_scores)
+        masked_scores = attention_scores.masked_fill(mask.bool(), -torch.inf)
+        masked_weights = self.attention_weights(masked_scores, keys)
+        return masked_weights
+
 
 class MultiHeadAttention:
     pass
