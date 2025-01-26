@@ -39,7 +39,7 @@ class SelfAttention(nn.Module):
 
     Note that the implementation is on one input and not a batch of inputs. Causal attention module implements batched input
     """
-    def __init__(self, d_in, d_out):
+    def __init__(self, d_in, d_out, qkv_bias=False):
         super().__init__()
         # self.W_key = nn.Parameter(torch.rand(d_in, d_out), requires_grad=False)
         # self.W_query = nn.Parameter(torch.rand(d_in, d_out), requires_grad=False)
@@ -162,5 +162,13 @@ class CausalAttention(nn.Module):
         return masked_weights
 
 
-class MultiHeadAttention:
-    pass
+class MultiHeadAttentionWrapper(nn.Module):
+    def __init__(self, d_in, d_out, context_length, dropout, num_heads, qkv_bias=False):
+        super().__init__()
+        self.heads = nn.ModuleList(
+            [CausalAttention(d_in, d_out, context_length, dropout, qkv_bias)
+             for _ in range(num_heads)]
+        )
+
+    def forward(self, x):
+        return torch.cat([head(x) for head in self.heads], dim=-1)
